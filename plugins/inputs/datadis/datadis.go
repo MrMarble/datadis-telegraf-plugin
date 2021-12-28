@@ -3,7 +3,6 @@ package datadis
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io/ioutil"
 	"net/http"
@@ -17,21 +16,6 @@ import (
 )
 
 const URL = "https://datadis.es"
-
-type MarshableTime struct {
-	time.Time
-}
-
-func (m *MarshableTime) UnmarshalJSON(b []byte) (err error) {
-	s := string(b)
-	s = s[1 : len(s)-1]
-	t, err := time.Parse(time.RFC3339, s)
-	if err != nil {
-		return err
-	}
-	m.Time = t
-	return nil
-}
 
 type Supply struct {
 	Address         string `json:"address"`
@@ -66,7 +50,7 @@ type measurementType int
 
 const (
 	HOURLY measurementType = iota
-	QUARTER_HOURLY
+	QuarterHourly
 )
 
 type Datadis struct {
@@ -79,23 +63,23 @@ type Datadis struct {
 	supplies        []Supply
 }
 
-func (p *Datadis) createHTTPClient() *http.Client {
-	client := http.Client{Timeout: time.Duration(p.HTTPTimeout)}
+func (d *Datadis) createHTTPClient() *http.Client {
+	client := http.Client{Timeout: time.Duration(d.HTTPTimeout)}
 	return &client
 }
 
 func (d *Datadis) refreshToken() error {
-	authUrl, _ := url.Parse(URL)
+	authURL, _ := url.Parse(URL)
 
-	authUrl.Path = "/nikola-auth/tokens/login"
+	authURL.Path = "/nikola-auth/tokens/login"
 
-	q := authUrl.Query()
+	q := authURL.Query()
 	q.Set("username", d.username)
 	q.Set("password", d.password)
 
-	authUrl.RawQuery = q.Encode()
+	authURL.RawQuery = q.Encode()
 
-	resp, err := d.httpClient.Post(authUrl.String(), "", nil)
+	resp, err := d.httpClient.Post(authURL.String(), "", nil)
 	if err != nil {
 		return err
 	}
@@ -108,17 +92,17 @@ func (d *Datadis) refreshToken() error {
 		}
 		d.token = string(token)
 	} else {
-		return errors.New(fmt.Sprintf("error fetching token. Response status: %v - %v", resp.StatusCode, resp.Status))
+		return fmt.Errorf("error fetching token. Response status: %v - %v", resp.StatusCode, resp.Status)
 	}
 
 	return nil
 }
 
 func (d *Datadis) getSupplies() error {
-	supplyUrl, _ := url.Parse(URL)
-	supplyUrl.Path = "/api-private/api/get-supplies"
+	supplyURL, _ := url.Parse(URL)
+	supplyURL.Path = "/api-private/api/get-supplies"
 
-	resp, err := d.httpClient.Get(supplyUrl.String())
+	resp, err := d.httpClient.Get(supplyURL.String())
 	if err != nil {
 		return err
 	}
@@ -135,34 +119,36 @@ func (d *Datadis) getSupplies() error {
 }
 
 func (d *Datadis) fetchAllConsumptions(ctx context.Context) ([]Consumption, error) {
-	errs, ctx := errgroup.WithContext(ctx)
+	errs, _ := errgroup.WithContext(ctx)
 
 	var consumptions []Consumption
 	for _, supply := range d.supplies {
-		errs.Go(func() error {
-			consumptionUrl, _ := url.Parse(URL)
-			consumptionUrl.Path = "/api-private/api/get-consumption-data"
+		errs.Go(func(_supply Supply) func() error {
+			return func() error {
+				consumptionURL, _ := url.Parse(URL)
+				consumptionURL.Path = "/api-private/api/get-consumption-data"
 
-			q := consumptionUrl.Query()
-			q.Set("cups", supply.Cups)
-			q.Set("distributorCode", supply.DistributorCode)
-			q.Set("measurementType", string(d.MeasurementType))
-			q.Set("pointType", string(supply.PointType))
+				q := consumptionURL.Query()
+				q.Set("cups", _supply.Cups)
+				q.Set("distributorCode", _supply.DistributorCode)
+				q.Set("measurementType", fmt.Sprint(d.MeasurementType))
+				q.Set("pointType", fmt.Sprint(_supply.PointType))
 
-			resp, err := d.httpClient.Get(consumptionUrl.String())
-			if err != nil {
-				return err
+				resp, err := d.httpClient.Get(consumptionURL.String())
+				if err != nil {
+					return err
+				}
+				defer resp.Body.Close()
+
+				var data []Consumption
+				err = json.NewDecoder(resp.Body).Decode(&data)
+				if err != nil {
+					return err
+				}
+				consumptions = append(consumptions, data...)
+				return nil
 			}
-			defer resp.Body.Close()
-
-			var data []Consumption
-			err = json.NewDecoder(resp.Body).Decode(&data)
-			if err != nil {
-				return err
-			}
-			consumptions = append(consumptions, data...)
-			return nil
-		})
+		}(supply))
 	}
 
 	return consumptions, errs.Wait()
@@ -196,6 +182,10 @@ func (d *Datadis) Init() error {
 	}
 
 	err := d.refreshToken()
+	if err != nil {
+		return err
+	}
+	err = d.getSupplies()
 	return err
 }
 
