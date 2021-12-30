@@ -8,59 +8,62 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/influxdata/telegraf"
 	"github.com/influxdata/telegraf/config"
+	"github.com/influxdata/telegraf/metric"
 	"github.com/influxdata/telegraf/plugins/inputs"
 	"golang.org/x/sync/errgroup"
 )
 
-const URL = "https://datadis.es"
-
-type Datadis struct {
-	HTTPTimeout     config.Duration `toml:"http_timeout"`
-	MeasurementType measurementType `toml:"measurement_type"`
-	Username        string          `toml:"username"`
-	Password        string          `toml:"password"`
-	Supplies        []Supply        `toml:"supplies"`
-	StartDate       string          `toml:"start_date"`
-	EndDate         string          `toml:"end_date"`
-	DateDuration    config.Duration `toml:"date_duration"`
-	url             string
-	token           string
-	httpClient      *http.Client
-
-	Log telegraf.Logger `toml:"-"`
-}
-
-type measurementType int
-
 const (
+	URL                    = "https://datadis.es"
 	HOURLY measurementType = iota
 	QuarterHourly
 )
 
-type Supply struct {
-	Address         string `json:"address"`
-	Cups            string `json:"cups" toml:"cups"`
-	PostalCode      string `json:"postalCode"`
-	Province        string `json:"province"`
-	Municipality    string `json:"municipality"`
-	Distributor     string `json:"distributor"`
-	ValidDateFrom   string `json:"validDateFrom"`
-	ValidDateTo     string `json:"validDateTo"`
-	PointType       uint8  `json:"pointType" toml:"point_type"`
-	DistributorCode string `json:"distributorCode" toml:"distributor_code"`
-}
+type (
+	// Datadis contains the configuration for the pluguin.
+	Datadis struct {
+		HTTPTimeout     config.Duration `toml:"http_timeout"`
+		MeasurementType measurementType `toml:"measurement_type"`
+		Username        string          `toml:"username"`
+		Password        string          `toml:"password"`
+		Supplies        []Supply        `toml:"supplies"`
+		StartDate       string          `toml:"start_date"`
+		EndDate         string          `toml:"end_date"`
+		DateDuration    config.Duration `toml:"date_duration"`
+		url             string
+		token           string
+		httpClient      *http.Client
 
-type Consumption struct {
-	Cups         string
-	Date         string
-	Time         string
-	KWh          float64
-	ObtainMethod string
-}
+		Log telegraf.Logger `toml:"-"`
+	}
+
+	Supply struct {
+		Address         string `json:"address"`
+		Cups            string `json:"cups" toml:"cups"`
+		PostalCode      string `json:"postalCode"`
+		Province        string `json:"province"`
+		Municipality    string `json:"municipality"`
+		Distributor     string `json:"distributor"`
+		ValidDateFrom   string `json:"validDateFrom"`
+		ValidDateTo     string `json:"validDateTo"`
+		PointType       uint8  `json:"pointType" toml:"point_type"`
+		DistributorCode string `json:"distributorCode" toml:"distributor_code"`
+	}
+	Consumption struct {
+		Cups         string
+		Date         string
+		Time         string
+		KWh          float64
+		ObtainMethod string
+	}
+
+	measurementType int
+)
 
 func (c *Consumption) timestamp() (*time.Time, error) {
 	t, err := time.Parse("2006/01/02 15:04", fmt.Sprintf("%v %v", c.Date, strings.Replace(c.Time, "24:", "00:", 1)))
@@ -70,10 +73,12 @@ func (c *Consumption) timestamp() (*time.Time, error) {
 	return &t, err
 }
 
+// Description returns a one-sentence description on the Datadis input plugin.
 func (d *Datadis) Description() string {
 	return "Gather information about your energy consumption from datadis."
 }
 
+// SampleConfig returns the default configuration of the Datadis input plugin.
 func (d *Datadis) SampleConfig() string {
 	return `
     ## Datadis username. Required.
@@ -108,9 +113,57 @@ func (d *Datadis) SampleConfig() string {
 `
 }
 
-func (d *Datadis) createHTTPClient() *http.Client {
-	client := http.Client{Timeout: time.Duration(d.HTTPTimeout)}
-	return &client
+// Gather takes in an accumulator and adds the metrics that the Input
+// gathers. This is called every "interval".
+func (d *Datadis) Gather(acc telegraf.Accumulator) error {
+
+	err := d.initializeClient()
+	if err != nil {
+		return err
+	}
+
+	wg := sync.WaitGroup{}
+	rLock := sync.Mutex{}
+
+	metrics := []Consumption{}
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+
+		result, err := d.fetchAllConsumptions()
+		if err != nil {
+			acc.AddError(err)
+			return
+		}
+
+		rLock.Lock()
+		metrics = result
+		rLock.Unlock()
+	}()
+	wg.Wait()
+
+	return d.aggregateMetrcs(acc, metrics)
+}
+
+func (d *Datadis) initializeClient() error {
+	if d.httpClient == nil {
+		client := http.Client{Timeout: time.Duration(d.HTTPTimeout)}
+		d.httpClient = &client
+	}
+
+	err := d.refreshToken()
+	if err != nil {
+		return err
+	}
+
+	if d.Supplies == nil {
+		err := d.getSupplies()
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (d *Datadis) refreshToken() error {
@@ -199,12 +252,15 @@ func fetchConsumption(d Datadis, supply Supply) ([]Consumption, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	req.Header.Add("Accept", "application/json")
 	req.Header.Add("Authorization", fmt.Sprintf("Bearer %v", d.token))
+
 	resp, err := d.httpClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
+
 	defer resp.Body.Close()
 
 	var data []Consumption
@@ -220,8 +276,8 @@ func fetchConsumption(d Datadis, supply Supply) ([]Consumption, error) {
 	return data, nil
 }
 
-func (d *Datadis) fetchAllConsumptions(ctx context.Context) ([]Consumption, error) {
-	errs, _ := errgroup.WithContext(ctx)
+func (d *Datadis) fetchAllConsumptions() ([]Consumption, error) {
+	errs, _ := errgroup.WithContext(context.Background())
 
 	var consumptions []Consumption
 	for _, supply := range d.Supplies {
@@ -238,47 +294,37 @@ func (d *Datadis) fetchAllConsumptions(ctx context.Context) ([]Consumption, erro
 	return consumptions, errors
 }
 
-// Init is for setup, and validating config.
-func (d *Datadis) Init() error {
-	d.Log.Debugf("Datadis loaded %#v", d)
-	return nil
-}
+func (d *Datadis) aggregateMetrcs(acc telegraf.Accumulator, metrics []Consumption) error {
+	var (
+		grouper = metric.NewSeriesGrouper()
+		er      error
+	)
 
-func (d *Datadis) Gather(acc telegraf.Accumulator) error {
-	d.Log.Info("Gathering Datadis data")
-	if d.httpClient == nil {
-		d.httpClient = d.createHTTPClient()
-	}
-	if d.token == "" {
-		err := d.refreshToken()
-		if err != nil {
-			return err
-		}
-	}
-	if d.Supplies == nil {
-		err := d.getSupplies()
-		if err != nil {
-			return err
-		}
-	}
-
-	data, err := d.fetchAllConsumptions(context.Background())
-	if err != nil {
-		return err
-	}
-	d.Log.Debugf("Fetched %d registries", len(data))
-
-	for _, consumption := range data {
-		fields := map[string]interface{}{"kwh": consumption.KWh}
+	for _, consumption := range metrics {
 		tags := map[string]string{"cups": consumption.Cups, "obtain_method": consumption.ObtainMethod}
 
 		timestamp, err := consumption.timestamp()
 		if err != nil {
-			return err
+			acc.AddError(err)
+			er = err
 		}
-		acc.AddFields("Datadis", fields, tags, *timestamp)
+		err = grouper.Add("Datadis", tags, *timestamp, "kwh", consumption.KWh)
+		if err != nil {
+			acc.AddError(err)
+			er = err
+		}
 	}
 
+	for _, metric := range grouper.Metrics() {
+		acc.AddMetric(metric)
+	}
+
+	return er
+}
+
+// Init is for setup, and validating config.
+func (d *Datadis) Init() error {
+	d.Log.Debugf("Datadis loaded %#v", d)
 	return nil
 }
 
