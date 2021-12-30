@@ -58,7 +58,7 @@ type (
 		Cups         string
 		Date         string
 		Time         string
-		KWh          float64
+		KWh          float64 `json:"consumptionKWh"`
 		ObtainMethod string
 	}
 

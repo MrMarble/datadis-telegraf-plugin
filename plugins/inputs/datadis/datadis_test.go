@@ -90,5 +90,9 @@ func TestFetchConsumption(t *testing.T) {
 		if timestamp.Unix() != 1640649600 {
 			t.Fatalf("expected: %d, got: %d", 1640649600, timestamp.Unix())
 		}
+
+		if got[0].KWh != 0.121 {
+			t.Fatalf("expected: %f, got: %f", 0.121, got[0].KWh)
+		}
 	})
 }
