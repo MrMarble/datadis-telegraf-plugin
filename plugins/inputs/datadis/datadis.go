@@ -225,8 +225,8 @@ func (d *Datadis) fetchAllConsumptions(ctx context.Context) ([]Consumption, erro
 
 	var consumptions []Consumption
 	for _, supply := range d.Supplies {
+		supply := supply
 		errs.Go(func() error {
-			supply := supply
 
 			data, err := fetchConsumption(*d, supply)
 			consumptions = append(consumptions, data...)
