@@ -3,6 +3,11 @@ module github.com/mrmarble/datadis-telegraf-plugin
 go 1.17
 
 require (
+	github.com/influxdata/telegraf v1.21.1
+	golang.org/x/sync v0.0.0-20210220032951-036812b2e83c
+)
+
+require (
 	collectd.org v0.5.0 // indirect
 	github.com/BurntSushi/toml v0.4.1 // indirect
 	github.com/alecthomas/units v0.0.0-20211218093645-b94a6e3cc137 // indirect
@@ -20,7 +25,6 @@ require (
 	github.com/golang/groupcache v0.0.0-20210331224755-41bb18bfe9da // indirect
 	github.com/golang/protobuf v1.5.2 // indirect
 	github.com/golang/snappy v0.0.4 // indirect
-	github.com/influxdata/telegraf v1.21.1 // indirect
 	github.com/influxdata/toml v0.0.0-20190415235208-270119a8ce65 // indirect
 	github.com/jhump/protoreflect v1.10.1 // indirect
 	github.com/mattn/go-colorable v0.1.12 // indirect
@@ -40,9 +44,9 @@ require (
 	go.uber.org/atomic v1.9.0 // indirect
 	go.uber.org/multierr v1.7.0 // indirect
 	golang.org/x/net v0.0.0-20211216030914-fe4d6282115f // indirect
-	golang.org/x/sync v0.0.0-20210220032951-036812b2e83c
 	golang.org/x/sys v0.0.0-20211216021012-1d35b9e2eb4e // indirect
 	golang.org/x/text v0.3.7 // indirect
+	gonum.org/v1/gonum v0.9.3 // indirect
 	google.golang.org/genproto v0.0.0-20211223182754-3ac035c7e7cb // indirect
 	google.golang.org/protobuf v1.27.1 // indirect
 )
