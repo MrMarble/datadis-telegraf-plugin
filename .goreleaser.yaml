@@ -11,6 +11,8 @@ builds:
       - linux
       - windows
       - darwin
+    main: ./cmd
+    binary: datadis
 archives:
   - replacements:
       darwin: Darwin
